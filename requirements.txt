@@ -1,0 +1,7 @@
+streamlit
+requests
+geopandas
+shapely
+pyproj
+folium
+streamlit_folium
