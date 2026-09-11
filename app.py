@@ -32,55 +32,97 @@ def nztm_to_wgs84(x, y):
 
 
 # =========================
-# ADDRESS VALIDATION (SEARCH-ON-SUBMIT, NOT LIVE AUTOCOMPLETE)
+# ADDRESS VALIDATION (LINZ DATA SERVICE — KEYED, NOT A SHARED PUBLIC ENDPOINT)
 # =========================
-# Two live-as-you-type approaches were tried and both hit public-API
-# reliability problems: Nominatim's usage policy explicitly forbids
-# client-side autocomplete and silently drops that traffic, and the
-# Photon fallback started returning HTTP errors (likely rate-limiting from
-# firing a request per keystroke). Neither problem applies to a single,
-# explicit, on-submit search — which is exactly Nominatim's intended use
-# case. Validation now happens by having the person confirm which resolved
-# address they meant from a short list, rather than by querying live.
-NOMINATIM_URL = "https://nominatim.openstreetmap.org/search"
+# Two free, unauthenticated public geocoders were tried and both hit
+# reliability walls: Nominatim's usage policy forbids autocomplete and
+# blocks at the IP level (which also meant our earlier per-keystroke
+# testing could get an entire shared-hosting IP range blocked), and a
+# Photon fallback started returning HTTP errors under repeated requests.
+# LINZ's own "NZ Addresses" dataset, queried through the LINZ Data Service
+# WFS API with a personal API key, sidesteps both problems: auth is by key
+# rather than by IP, and it's the authoritative NZ address source besides.
+#
+# Get a free key: sign in at https://data.linz.govt.nz -> avatar menu ->
+# "My API keys" -> generate a key with the default read-only scope (this
+# grants access to all public layers, including layer 105689 used below).
+# Store it as LINZ_API_KEY in .streamlit/secrets.toml locally, and in the
+# app's "Secrets" settings on Streamlit Community Cloud when deployed.
+LINZ_ADDRESS_LAYER = "layer-105689"  # "NZ Addresses" (replaced NZ Street Address, Jan 2023)
+LINZ_WFS_TEMPLATE = "https://data.linz.govt.nz/services;key={api_key}/wfs"
 
 
-def geocode_address_candidates(address: str, limit: int = 5):
+def _cql_escape(term: str) -> str:
+    """Escape single quotes for safe inclusion in a CQL_FILTER literal."""
+    return term.replace("'", "''")
+
+
+def geocode_address_candidates(address: str, limit: int = 8):
     """
     Returns (candidates, error). candidates is a list of
-    {"label", "lat", "lon"} dicts for real, Nominatim-resolved addresses —
-    if the list is empty (and there's no error) nothing matched, which is
-    itself the validation signal.
+    {"label", "lat", "lon"} dicts sourced from LINZ's authoritative NZ
+    Addresses dataset — if the list is empty (and there's no error)
+    nothing matched, which is itself the validation signal.
     """
     address = (address or "").strip()
     if not address:
         return [], "Please enter an address."
 
+    api_key = st.secrets.get("LINZ_API_KEY")
+    if not api_key:
+        return [], (
+            "No LINZ API key configured. Add LINZ_API_KEY to .streamlit/secrets.toml "
+            "(or the app's Secrets settings if deployed) — see the README for how to get a free key."
+        )
+
+    term = _cql_escape(address)
+    cql_filter = (
+        f"full_road_name ILIKE '%{term}%' "
+        f"OR suburb_locality ILIKE '%{term}%' "
+        f"OR town_city ILIKE '%{term}%'"
+    )
     params = {
-        "q": f"{address}, New Zealand",
-        "format": "json",
-        "limit": limit,
-        "countrycodes": "nz",
+        "service": "WFS",
+        "version": "2.0.0",
+        "request": "GetFeature",
+        "typeNames": LINZ_ADDRESS_LAYER,
+        "outputFormat": "json",
+        "SRSName": "EPSG:4326",
+        "count": limit,
+        "cql_filter": cql_filter,
     }
-    # Nominatim's usage policy requires a real identifying User-Agent.
-    # Swap in your project name / contact so requests aren't blocked.
-    headers = {"User-Agent": "nz-coast-distance-streamlit-app (contact: you@example.com)"}
+    url = LINZ_WFS_TEMPLATE.format(api_key=api_key)
 
     try:
-        r = requests.get(NOMINATIM_URL, params=params, headers=headers, timeout=15)
+        r = requests.get(url, params=params, timeout=15)
         r.raise_for_status()
         data = r.json()
     except requests.exceptions.HTTPError:
         status = r.status_code if "r" in locals() else "unknown"
-        return [], f"Address search failed (HTTP {status} from the geocoding service). Please try again shortly."
+        return [], f"Address search failed (HTTP {status} from LINZ). Check that your API key is valid and active."
     except Exception as e:
         return [], f"Address search failed ({e.__class__.__name__}). Check your network connection."
 
-    candidates = [
-        {"label": item["display_name"], "lat": float(item["lat"]), "lon": float(item["lon"])}
-        for item in data
-        if item.get("display_name")
-    ]
+    candidates = []
+    for feat in data.get("features", []):
+        props = feat.get("properties", {}) or {}
+        coords = (feat.get("geometry") or {}).get("coordinates")
+        if not coords:
+            continue
+        lon, lat = coords[0], coords[1]
+
+        number = props.get("full_address_number") or props.get("address_number") or ""
+        street = props.get("full_road_name") or ""
+        street_line = f"{number} {street}".strip()
+        suburb = props.get("suburb_locality") or ""
+        city = props.get("town_city") or ""
+
+        label = ", ".join(p for p in [street_line, suburb, city] if p)
+        if not label:
+            continue
+
+        candidates.append({"label": label, "lat": lat, "lon": lon})
+
     if not candidates:
         return [], "No matching New Zealand address found. Try a more specific search, or use the map instead."
     return candidates, None

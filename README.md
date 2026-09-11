@@ -9,6 +9,7 @@ straight-line distance to the nearest coastline, using LINZ coastline data.
 python -m venv .venv
 source .venv/bin/activate  # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
+cp .streamlit/secrets.toml.example .streamlit/secrets.toml  # then add your LINZ_API_KEY
 streamlit run app.py
 ```
 
@@ -47,24 +48,55 @@ Make sure `linz_coast_50258.gpkg` sits next to `app.py`.
 
 ## Address validation
 
-Typing an address and clicking **Search address** queries Nominatim once
-(restricted to New Zealand via `countrycodes=nz`) and shows up to 5
-resolved matches in a dropdown for you to confirm — only a real,
-geocoder-resolved address can be selected, and **Calculate Distance** stays
-disabled until one is picked. That confirmation step is the validation.
-The manual pin-drop map is still there as a fallback for addresses
-Nominatim can't resolve.
+Typing an address and clicking **Search address** queries LINZ's own
+**NZ Addresses** dataset (the authoritative national address source,
+`layer-105689` on the LINZ Data Service) and shows up to 8 matches in a
+dropdown to confirm — only a real, LINZ-resolved address can be selected,
+and **Calculate Distance** stays disabled until one is picked. That
+confirmation step is the validation.
 
-**Why not live search-as-you-type?** Two attempts at that hit reliability
-walls: Nominatim's own usage policy explicitly forbids implementing
-autocomplete against its API and silently drops that kind of traffic (which
-is why the first version looked like it was querying but never returned
-anything), and a Photon-based fallback started returning HTTP errors,
-likely from firing a request on every keystroke. A single, explicit,
-on-submit search is exactly Nominatim's intended use case, avoids both
-failure modes, and is far lighter on the free public API. If a search does
-fail for another reason, the actual error (including HTTP status) is shown
-as a warning instead of failing silently.
+### Get a free LINZ API key (required)
+
+1. Create a free account at [data.linz.govt.nz](https://data.linz.govt.nz).
+2. Click your avatar (top right) → **My API keys** → generate a new key
+   with the default read-only scope. This automatically covers all public
+   layers, including the NZ Addresses layer used here.
+3. **Local development:** copy `.streamlit/secrets.toml.example` to
+   `.streamlit/secrets.toml` and paste your key in as `LINZ_API_KEY`.
+   This file is already git-ignored, so it won't get committed.
+4. **Streamlit Community Cloud:** open your app's settings → **Secrets**,
+   and add:
+   ```toml
+   LINZ_API_KEY = "your-key-here"
+   ```
+
+If the key is missing or invalid, the app shows a warning explaining that,
+rather than a generic network error.
+
+### Why not a free public geocoder?
+
+Two were tried first and both hit reliability walls specific to shared,
+unauthenticated public infrastructure:
+
+- **Nominatim (OSM)** — its usage policy explicitly forbids implementing
+  autocomplete against it and silently drops that traffic (why the first
+  version looked like it was querying but returned nothing). Switching to
+  an on-submit search avoided the policy issue, but then produced
+  **HTTP 403s** — Nominatim blocks at the *IP* level, and Streamlit
+  Community Cloud shares outbound IPs across many deployed apps, so one
+  overzealous app elsewhere on that infrastructure can get everyone
+  blocked. A custom User-Agent (which the app already sent) doesn't fix an
+  IP-level block.
+- **Photon (komoot)** — built for search-as-you-type, but started
+  returning HTTP errors under repeated requests, likely rate-limiting.
+
+LINZ's WFS API authenticates by **API key**, not by client IP, so it isn't
+exposed to the shared-IP-block problem, and as a government data service
+its usage terms don't carry the same "must not autocomplete" restriction —
+though this app still only searches on explicit submit to keep request
+volume modest and considerate. It's also simply the right data source: the
+authoritative NZ address register, from the same agency (LINZ) whose
+coastline data drives the distance calculation.
 
 ## Colorsteel® warranty-environment guidance
 
