@@ -45,6 +45,41 @@ Make sure `linz_coast_50258.gpkg` sits next to `app.py`.
 - **Dependency swap (fiona → pyogrio)** so the deploy doesn't depend on a
   system GDAL install.
 
+## Address validation
+
+The address field is now a live search box (`streamlit-searchbox`) backed by
+Nominatim, restricted to New Zealand via `countrycodes=nz` and a bounding
+viewbox. Suggestions populate as you type (debounced, 3+ characters), and
+you can only submit a calculation by picking one of the resolved
+suggestions — so an address is "valid" by construction rather than checked
+after the fact. The manual pin-drop map is still there as a fallback for
+addresses Nominatim can't resolve.
+
+## Colorsteel® warranty-environment guidance
+
+Once a distance is calculated, an expander shows an *indicative* COLORSTEEL®
+environmental category (Mild / Moderate / Severe / Very Severe / Extremely
+Severe) based on New Zealand Steel's published Environmental Categories &
+Warranty guide (colorsteel.co.nz/warranty). A few important caveats, carried
+into the app's own disclaimer text:
+
+- The guide publishes **separate distance bands for the East and West
+  coast** (the West coast, being more exposed to prevailing weather, uses
+  larger distances for the same category). This app uses the more
+  conservative West-coast bands so it never *understates* corrosion risk,
+  but the real category for an East-coast address may be one step milder.
+- Boundaries are further adjusted by wind exposure and whether the water is
+  breaking surf or a calm harbour/estuary — a straight-line distance can't
+  capture that.
+- New Zealand Steel explicitly states that **anything within 100 m of a
+  salt water body needs direct confirmation from Colorsteel** for warranty
+  purposes, and very severe/extremely severe sites are often outside
+  standard residential warranty eligibility without that confirmation.
+
+This feature is guidance for demo purposes only, not a warranty
+determination — the in-app copy says as much and links to
+colorsteel.co.nz/warranty for the authoritative source.
+
 ## Ideas for further polish (not yet implemented)
 
 - Cache `calculate_distance` results per (lat, lon) pair.

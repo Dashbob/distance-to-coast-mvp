@@ -1,5 +1,3 @@
-import time
-
 import streamlit as st
 import requests
 import geopandas as gpd
@@ -8,6 +6,7 @@ from shapely.ops import nearest_points
 from pyproj import Transformer
 import folium
 from streamlit_folium import st_folium
+from streamlit_searchbox import st_searchbox
 
 # =========================
 # CONFIG & PAGE SETUP
@@ -17,6 +16,10 @@ st.set_page_config(page_title="NZ Coast Distance Tool", page_icon="🌊")
 COAST_CACHE = "linz_coast_50258.gpkg"
 NZTM_EPSG = 2193
 WGS84_EPSG = 4326
+
+# Rough NZ mainland bounding box (excludes outlying islands), used to bias
+# and constrain address autocomplete results.
+NZ_VIEWBOX = "166.0,-34.0,179.5,-47.5"  # left,top,right,bottom (lon/lat)
 
 # =========================
 # CRS TRANSFORMS
@@ -34,25 +37,53 @@ def nztm_to_wgs84(x, y):
 
 
 # =========================
-# GEOCODING (cached so repeat lookups of the same address don't
-# hit Nominatim again — also respects their fair-use rate limits)
+# ADDRESS VALIDATION / AUTOCOMPLETE
 # =========================
-@st.cache_data(show_spinner=False, ttl=60 * 60 * 24)
-def geocode_address(address: str):
+@st.cache_data(show_spinner=False, ttl=60 * 60)
+def _nz_address_candidates(searchterm: str):
+    """
+    Returns live suggestions for the address search box, restricted to New
+    Zealand by both `countrycodes` and a bounding viewbox. Only addresses
+    Nominatim actually resolves are offered, so picking one from the
+    dropdown *is* the validation step — there's no separate "is this a real
+    NZ address" check needed downstream, and no risk of a stray click
+    calculating a distance for an unresolved/garbage address.
+    """
+    searchterm = (searchterm or "").strip()
+    if len(searchterm) < 3:
+        return []
+
     url = "https://nominatim.openstreetmap.org/search"
-    params = {"q": address + ", New Zealand", "format": "json", "limit": 1}
+    params = {
+        "q": searchterm,
+        "format": "json",
+        "limit": 6,
+        "countrycodes": "nz",
+        "viewbox": NZ_VIEWBOX,
+        "bounded": 1,
+    }
     # Nominatim's usage policy requires a real identifying User-Agent.
     # Swap in your project name / contact so requests aren't blocked.
     headers = {"User-Agent": "nz-coast-distance-streamlit-app (contact: you@example.com)"}
 
-    r = requests.get(url, params=params, headers=headers, timeout=20)
-    r.raise_for_status()
+    try:
+        r = requests.get(url, params=params, headers=headers, timeout=8)
+        r.raise_for_status()
+        data = r.json()
+    except Exception:
+        return []
 
-    data = r.json()
-    if not data:
-        raise ValueError(f"Address not found: {address}")
+    return [
+        (
+            item["display_name"],
+            {"label": item["display_name"], "lat": float(item["lat"]), "lon": float(item["lon"])},
+        )
+        for item in data
+    ]
 
-    return float(data[0]["lat"]), float(data[0]["lon"])
+
+def search_nz_addresses(searchterm: str):
+    return _nz_address_candidates(searchterm)
 
 
 # =========================
@@ -60,12 +91,6 @@ def geocode_address(address: str):
 # =========================
 @st.cache_resource(show_spinner=False)
 def load_coastline():
-    """
-    st.cache_resource (not cache_data) because a GeoDataFrame is a large,
-    unhashable, non-trivially-serializable object we only ever read from.
-    cache_resource keeps a single in-memory instance across reruns/sessions
-    instead of pickling/copying it every time.
-    """
     try:
         # pyogrio is the fast GeoPandas I/O backend and ships its own GDAL
         # binaries in the wheel — no apt-get/packages.txt GDAL install
@@ -81,9 +106,7 @@ def load_coastline():
     if gdf.crs.to_epsg() != NZTM_EPSG:
         gdf = gdf.to_crs(epsg=NZTM_EPSG)
 
-    # Building the spatial index once, up front, means every subsequent
-    # nearest-neighbour query is O(log n) instead of a full O(n) scan.
-    _ = gdf.sindex
+    _ = gdf.sindex  # build the spatial index once, up front
     return gdf
 
 
@@ -91,12 +114,6 @@ def load_coastline():
 # NEAREST COAST LOGIC (spatial-index accelerated)
 # =========================
 def calculate_distance(lat: float, lon: float, coast_gdf, label: str):
-    """
-    Uses the GeoDataFrame's spatial index (STRtree under shapely 2.0) to
-    find the nearest coastline feature in O(log n) instead of looping over
-    every row. For LINZ coastline data split into many segments/tiles this
-    is dramatically faster and scales to large datasets.
-    """
     x, y = wgs84_to_nztm(lon, lat)
     p = Point(x, y)
 
@@ -119,10 +136,42 @@ def calculate_distance(lat: float, lon: float, coast_gdf, label: str):
 
 
 # =========================
+# COLORSTEEL ENVIRONMENTAL CATEGORY GUIDANCE
+# =========================
+def classify_colorsteel_environment(distance_m: float):
+    """
+    Approximate mapping to New Zealand Steel's published COLORSTEEL(R)
+    Environmental Categories, using the *West coast* distance bands (the
+    more conservative of the two published sets) so this never under-states
+    corrosion risk. Real boundaries differ by East vs West coast and are
+    adjusted further by prevailing wind, breaking surf vs calm water, and
+    other site factors -- this is indicative only, not a warranty
+    determination. See colorsteel.co.nz/warranty and NZ Steel's
+    Environmental Categories & Warranty guide for the authoritative version.
+    """
+    bands = [
+        ("Extremely severe", 0, 50,
+         "Frequently outside standard residential warranty eligibility. Direct confirmation from Colorsteel/New Zealand Steel is generally required."),
+        ("Very severe", 50, 500,
+         "Product choice is limited (e.g. marine-grade options). Confirm warranty eligibility before specifying."),
+        ("Severe", 500, 1000,
+         "Most COLORSTEEL(R) product ranges are warrantable, but the specific product/coating matters."),
+        ("Moderate", 1000, 5000,
+         "Covers the majority of New Zealand. Standard COLORSTEEL(R) ranges are typically warrantable here."),
+        ("Mild", 5000, float("inf"),
+         "Least corrosive category. Broadest product choice; full standard warranty terms typically apply."),
+    ]
+    for name, lo, hi, note in bands:
+        if lo <= distance_m < hi:
+            return name, note
+    return "Unknown", ""
+
+
+# =========================
 # STREAMLIT UI
 # =========================
 st.title("🌊 NZ Coast Distance Calculator")
-st.write("Enter an address to find its distance to the nearest coastline.")
+st.write("Start typing a New Zealand address and pick it from the list to find its distance to the nearest coastline.")
 
 with st.spinner("Loading coastline data..."):
     coast_data = load_coastline()
@@ -132,22 +181,28 @@ if "calc_result" not in st.session_state:
 if "manual_fallback" not in st.session_state:
     st.session_state.manual_fallback = False
 
-# --- INPUT SECTION ---
-address_input = st.text_input("Enter a New Zealand address:", placeholder="e.g., Sky Tower, Auckland")
+# --- INPUT SECTION: live-validated address search ---
+selected_address = st_searchbox(
+    search_nz_addresses,
+    placeholder="e.g., Sky Tower, Auckland",
+    label="Enter a New Zealand address:",
+    key="address_searchbox",
+    clear_on_submit=False,
+)
 
-if st.button("Calculate Distance", type="primary"):
-    if not address_input.strip():
-        st.warning("Please enter an address.")
-    else:
-        with st.spinner("Searching for address..."):
-            try:
-                lat, lon = geocode_address(address_input)
-                st.session_state.calc_result = calculate_distance(lat, lon, coast_data, address_input)
-                st.session_state.manual_fallback = False
-            except Exception:
-                st.error("Address not found or network error. Please drop a pin on the map below instead.")
-                st.session_state.manual_fallback = True
-                st.session_state.calc_result = None
+col1, col2 = st.columns([3, 2])
+with col1:
+    calc_clicked = st.button("Calculate Distance", type="primary", disabled=selected_address is None)
+with col2:
+    if st.button("Can't find your address? Use map instead"):
+        st.session_state.manual_fallback = True
+
+if calc_clicked and selected_address:
+    with st.spinner("Calculating..."):
+        st.session_state.calc_result = calculate_distance(
+            selected_address["lat"], selected_address["lon"], coast_data, selected_address["label"]
+        )
+        st.session_state.manual_fallback = False
 
 # --- FALLBACK MAP SECTION ---
 if st.session_state.manual_fallback:
@@ -180,6 +235,19 @@ if st.session_state.calc_result and not st.session_state.manual_fallback:
         st.metric("Distance to Coast", f"{dist_km:.2f} km")
     with col2:
         st.metric("Coast Side", str(res["coast_side"]).title())
+
+    # --- Colorsteel warranty-environment guidance ---
+    tier, note = classify_colorsteel_environment(res["distance_m"])
+    with st.expander(f"🏠 Estimated Colorsteel® environmental category: {tier} (guidance only)"):
+        st.write(note)
+        st.caption(
+            "Indicative only — based on New Zealand Steel's published COLORSTEEL® Environmental "
+            "Categories & Warranty guide, using the more conservative West-coast distance bands. "
+            "Actual category boundaries differ between the East and West coast and are affected by "
+            "prevailing wind, breaking surf vs. calm water, and other site-specific factors. "
+            "For anything within 100 m of a salt water body — and before relying on this for a real "
+            "project — confirm directly with Colorsteel: https://colorsteel.co.nz/warranty"
+        )
 
     st.write("**Map View:**")
 
