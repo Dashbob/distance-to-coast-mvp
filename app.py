@@ -17,10 +17,6 @@ COAST_CACHE = "linz_coast_50258.gpkg"
 NZTM_EPSG = 2193
 WGS84_EPSG = 4326
 
-# Rough NZ mainland bounding box (excludes outlying islands), used to bias
-# and constrain address autocomplete results.
-NZ_VIEWBOX = "166.0,-34.0,179.5,-47.5"  # left,top,right,bottom (lon/lat)
-
 # =========================
 # CRS TRANSFORMS
 # =========================
@@ -39,51 +35,69 @@ def nztm_to_wgs84(x, y):
 # =========================
 # ADDRESS VALIDATION / AUTOCOMPLETE
 # =========================
+# NOTE: Nominatim (OSM) is deliberately NOT used here. Its own usage policy
+# lists "auto-complete search" implemented client-side as strictly
+# forbidden ("This is not yet supported by Nominatim and you must not
+# implement such a service on the client side using the API" —
+# operations.osmfoundation.org/policies/nominatim). In practice this is why
+# the previous version appeared to query but never returned suggestions:
+# type-ahead-style requests get silently dropped/blocked. Photon
+# (komoot.io) is a free, public geocoder explicitly built for
+# search-as-you-type and is the right tool for this job.
+PHOTON_URL = "https://photon.komoot.io/api/"
+NZ_BBOX = "166.0,-47.5,179.5,-34.0"  # min_lon,min_lat,max_lon,max_lat
+
+
 @st.cache_data(show_spinner=False, ttl=60 * 60)
 def _nz_address_candidates(searchterm: str):
     """
-    Returns live suggestions for the address search box, restricted to New
-    Zealand by both `countrycodes` and a bounding viewbox. Only addresses
-    Nominatim actually resolves are offered, so picking one from the
-    dropdown *is* the validation step — there's no separate "is this a real
-    NZ address" check needed downstream, and no risk of a stray click
-    calculating a distance for an unresolved/garbage address.
+    Returns (suggestions, error) for the address search box. Suggestions
+    are restricted to New Zealand via Photon's bbox filter (a hard filter,
+    not just a bias). Only addresses Photon actually resolves are offered,
+    so picking one from the dropdown *is* the validation step.
     """
     searchterm = (searchterm or "").strip()
     if len(searchterm) < 3:
-        return []
+        return [], None
 
-    url = "https://nominatim.openstreetmap.org/search"
-    params = {
-        "q": searchterm,
-        "format": "json",
-        "limit": 6,
-        "countrycodes": "nz",
-        "viewbox": NZ_VIEWBOX,
-        "bounded": 1,
-    }
-    # Nominatim's usage policy requires a real identifying User-Agent.
-    # Swap in your project name / contact so requests aren't blocked.
-    headers = {"User-Agent": "nz-coast-distance-streamlit-app (contact: you@example.com)"}
+    params = {"q": searchterm, "limit": 6, "lang": "en", "bbox": NZ_BBOX}
 
     try:
-        r = requests.get(url, params=params, headers=headers, timeout=8)
+        r = requests.get(PHOTON_URL, params=params, timeout=8)
         r.raise_for_status()
         data = r.json()
-    except Exception:
-        return []
+    except Exception as e:
+        return [], f"Address search failed ({e.__class__.__name__}). Check your network connection."
 
-    return [
-        (
-            item["display_name"],
-            {"label": item["display_name"], "lat": float(item["lat"]), "lon": float(item["lon"])},
-        )
-        for item in data
-    ]
+    suggestions = []
+    for feat in data.get("features", []):
+        props = feat.get("properties", {})
+        coords = (feat.get("geometry") or {}).get("coordinates")
+        if not coords:
+            continue
+        lon, lat = coords[0], coords[1]
+
+        label_parts = [
+            props.get("name"),
+            " ".join(p for p in [props.get("housenumber"), props.get("street")] if p) or None,
+            props.get("city") or props.get("district"),
+            props.get("state"),
+            props.get("postcode"),
+        ]
+        # dedupe while preserving order (e.g. name == city for some POIs)
+        label = ", ".join(dict.fromkeys(p for p in label_parts if p))
+        if not label:
+            continue
+
+        suggestions.append((label, {"label": label, "lat": lat, "lon": lon}))
+
+    return suggestions, None
 
 
 def search_nz_addresses(searchterm: str):
-    return _nz_address_candidates(searchterm)
+    suggestions, error = _nz_address_candidates(searchterm)
+    st.session_state["_address_search_error"] = error
+    return suggestions
 
 
 # =========================
@@ -138,33 +152,70 @@ def calculate_distance(lat: float, lon: float, coast_gdf, label: str):
 # =========================
 # COLORSTEEL ENVIRONMENTAL CATEGORY GUIDANCE
 # =========================
-def classify_colorsteel_environment(distance_m: float):
+# New Zealand Steel's published COLORSTEEL(R) Environmental Categories &
+# Warranty guide gives *different* distance bands for the East and West
+# coasts (the West coast is treated as more exposed/corrosive at the same
+# distance, given prevailing weather and breaking surf). Boundaries below
+# are in metres from the coastline.
+_COLORSTEEL_BANDS = {
+    "east": [
+        ("Extremely severe", 0, 25),
+        ("Very severe", 25, 100),
+        ("Severe", 100, 500),
+        ("Moderate", 500, 5000),
+        ("Mild", 5000, float("inf")),
+    ],
+    "west": [
+        ("Extremely severe", 0, 50),
+        ("Very severe", 50, 500),
+        ("Severe", 500, 1000),
+        ("Moderate", 1000, 5000),
+        ("Mild", 5000, float("inf")),
+    ],
+}
+
+_COLORSTEEL_NOTES = {
+    "Extremely severe": "Frequently outside standard residential warranty eligibility. Direct confirmation from Colorsteel/New Zealand Steel is generally required.",
+    "Very severe": "Product choice is limited (e.g. marine-grade options). Confirm warranty eligibility before specifying.",
+    "Severe": "Most COLORSTEEL(R) product ranges are warrantable, but the specific product/coating matters.",
+    "Moderate": "Covers the majority of New Zealand. Standard COLORSTEEL(R) ranges are typically warrantable here.",
+    "Mild": "Least corrosive category. Broadest product choice; full standard warranty terms typically apply.",
+}
+
+
+def classify_colorsteel_environment(distance_m: float, coast_side: str):
     """
-    Approximate mapping to New Zealand Steel's published COLORSTEEL(R)
-    Environmental Categories, using the *West coast* distance bands (the
-    more conservative of the two published sets) so this never under-states
-    corrosion risk. Real boundaries differ by East vs West coast and are
-    adjusted further by prevailing wind, breaking surf vs calm water, and
-    other site factors -- this is indicative only, not a warranty
-    determination. See colorsteel.co.nz/warranty and NZ Steel's
-    Environmental Categories & Warranty guide for the authoritative version.
+    Maps a distance-to-coast to an indicative COLORSTEEL(R) environmental
+    category using the East or West coast bands, chosen from the
+    `coast_side` attribute already present in the LINZ coastline layer
+    (rather than assuming a side). If the side can't be determined from the
+    data, falls back to the more conservative West-coast bands so this
+    never under-states corrosion risk, and flags that fallback in the
+    returned tuple.
+
+    This is indicative only, not a warranty determination -- boundaries are
+    further adjusted in reality by prevailing wind, breaking surf vs calm
+    water, and other site-specific factors. See colorsteel.co.nz/warranty
+    and NZ Steel's Environmental Categories & Warranty guide for the
+    authoritative version.
+
+    Returns: (tier_name, note, resolved_side, side_was_unknown)
     """
-    bands = [
-        ("Extremely severe", 0, 50,
-         "Frequently outside standard residential warranty eligibility. Direct confirmation from Colorsteel/New Zealand Steel is generally required."),
-        ("Very severe", 50, 500,
-         "Product choice is limited (e.g. marine-grade options). Confirm warranty eligibility before specifying."),
-        ("Severe", 500, 1000,
-         "Most COLORSTEEL(R) product ranges are warrantable, but the specific product/coating matters."),
-        ("Moderate", 1000, 5000,
-         "Covers the majority of New Zealand. Standard COLORSTEEL(R) ranges are typically warrantable here."),
-        ("Mild", 5000, float("inf"),
-         "Least corrosive category. Broadest product choice; full standard warranty terms typically apply."),
-    ]
-    for name, lo, hi, note in bands:
+    side_raw = (coast_side or "").strip().lower()
+    if "west" in side_raw:
+        resolved_side = "west"
+        side_unknown = False
+    elif "east" in side_raw:
+        resolved_side = "east"
+        side_unknown = False
+    else:
+        resolved_side = "west"  # unknown -> conservative fallback
+        side_unknown = True
+
+    for name, lo, hi in _COLORSTEEL_BANDS[resolved_side]:
         if lo <= distance_m < hi:
-            return name, note
-    return "Unknown", ""
+            return name, _COLORSTEEL_NOTES[name], resolved_side, side_unknown
+    return "Unknown", "", resolved_side, side_unknown
 
 
 # =========================
@@ -189,6 +240,8 @@ selected_address = st_searchbox(
     key="address_searchbox",
     clear_on_submit=False,
 )
+if st.session_state.get("_address_search_error"):
+    st.caption(f"⚠️ {st.session_state['_address_search_error']}")
 
 col1, col2 = st.columns([3, 2])
 with col1:
@@ -237,16 +290,26 @@ if st.session_state.calc_result and not st.session_state.manual_fallback:
         st.metric("Coast Side", str(res["coast_side"]).title())
 
     # --- Colorsteel warranty-environment guidance ---
-    tier, note = classify_colorsteel_environment(res["distance_m"])
-    with st.expander(f"🏠 Estimated Colorsteel® environmental category: {tier} (guidance only)"):
+    tier, note, resolved_side, side_unknown = classify_colorsteel_environment(
+        res["distance_m"], res["coast_side"]
+    )
+    with st.expander(
+        f"🏠 Estimated Colorsteel® environmental category: {tier} ({resolved_side.title()} coast bands)"
+    ):
         st.write(note)
+        if side_unknown:
+            st.caption(
+                f"The coastline dataset didn't return a usable East/West side for this point "
+                f"(coast_side = '{res['coast_side']}'), so the more conservative West-coast bands "
+                f"were used as a fallback."
+            )
+        else:
+            st.caption(f"Based on this point's coast_side value from the coastline dataset: '{res['coast_side']}'.")
         st.caption(
-            "Indicative only — based on New Zealand Steel's published COLORSTEEL® Environmental "
-            "Categories & Warranty guide, using the more conservative West-coast distance bands. "
-            "Actual category boundaries differ between the East and West coast and are affected by "
-            "prevailing wind, breaking surf vs. calm water, and other site-specific factors. "
-            "For anything within 100 m of a salt water body — and before relying on this for a real "
-            "project — confirm directly with Colorsteel: https://colorsteel.co.nz/warranty"
+            "Indicative only — actual category boundaries are also affected by prevailing wind, "
+            "breaking surf vs. calm water, and other site-specific factors. For anything within "
+            "100 m of a salt water body — and before relying on this for a real project — confirm "
+            "directly with Colorsteel: https://colorsteel.co.nz/warranty"
         )
 
     st.write("**Map View:**")

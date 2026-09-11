@@ -47,30 +47,43 @@ Make sure `linz_coast_50258.gpkg` sits next to `app.py`.
 
 ## Address validation
 
-The address field is now a live search box (`streamlit-searchbox`) backed by
-Nominatim, restricted to New Zealand via `countrycodes=nz` and a bounding
-viewbox. Suggestions populate as you type (debounced, 3+ characters), and
+The address field is a live search box (`streamlit-searchbox`) backed by
+**Photon** (photon.komoot.io), a free public geocoder purpose-built for
+search-as-you-type, restricted to New Zealand via a hard bounding-box
+filter. Suggestions populate as you type (debounced, 3+ characters), and
 you can only submit a calculation by picking one of the resolved
 suggestions — so an address is "valid" by construction rather than checked
-after the fact. The manual pin-drop map is still there as a fallback for
-addresses Nominatim can't resolve.
+after the fact. The manual pin-drop map is still there as a fallback.
+
+**Why not Nominatim (OSM)?** The first version used it and suggestions
+never appeared. Nominatim's own usage policy explicitly forbids
+implementing client-side auto-complete against its API, and in practice
+type-ahead-style traffic gets silently dropped or blocked — which is
+exactly what "looks like it's querying but nothing shows up" looks like.
+Photon exists specifically for this use case, so it's the right tool
+rather than something to work around. If a request does fail for another
+reason (e.g. no network), the app now surfaces that as a caption under the
+search box instead of failing silently.
 
 ## Colorsteel® warranty-environment guidance
 
 Once a distance is calculated, an expander shows an *indicative* COLORSTEEL®
 environmental category (Mild / Moderate / Severe / Very Severe / Extremely
 Severe) based on New Zealand Steel's published Environmental Categories &
-Warranty guide (colorsteel.co.nz/warranty). A few important caveats, carried
-into the app's own disclaimer text:
+Warranty guide (colorsteel.co.nz/warranty). The guide publishes **separate
+distance bands for the East and West coast** (the West coast, being more
+exposed to prevailing weather, needs a greater distance for the same
+category) — this app now picks the correct band set using the
+**`coast_side` attribute already returned by the LINZ coastline layer** for
+the nearest point, rather than assuming a side. If that attribute is
+missing or unrecognized for a given point, it falls back to the more
+conservative West-coast bands and says so in the UI.
 
-- The guide publishes **separate distance bands for the East and West
-  coast** (the West coast, being more exposed to prevailing weather, uses
-  larger distances for the same category). This app uses the more
-  conservative West-coast bands so it never *understates* corrosion risk,
-  but the real category for an East-coast address may be one step milder.
-- Boundaries are further adjusted by wind exposure and whether the water is
-  breaking surf or a calm harbour/estuary — a straight-line distance can't
-  capture that.
+Other caveats carried into the app's own disclaimer text:
+
+- Category boundaries are further adjusted in reality by wind exposure and
+  whether the water is breaking surf or a calm harbour/estuary — a
+  straight-line distance can't fully capture that.
 - New Zealand Steel explicitly states that **anything within 100 m of a
   salt water body needs direct confirmation from Colorsteel** for warranty
   purposes, and very severe/extremely severe sites are often outside
