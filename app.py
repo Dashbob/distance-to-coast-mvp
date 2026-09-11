@@ -6,7 +6,6 @@ from shapely.ops import nearest_points
 from pyproj import Transformer
 import folium
 from streamlit_folium import st_folium
-from streamlit_searchbox import st_searchbox
 
 # =========================
 # CONFIG & PAGE SETUP
@@ -33,71 +32,58 @@ def nztm_to_wgs84(x, y):
 
 
 # =========================
-# ADDRESS VALIDATION / AUTOCOMPLETE
+# ADDRESS VALIDATION (SEARCH-ON-SUBMIT, NOT LIVE AUTOCOMPLETE)
 # =========================
-# NOTE: Nominatim (OSM) is deliberately NOT used here. Its own usage policy
-# lists "auto-complete search" implemented client-side as strictly
-# forbidden ("This is not yet supported by Nominatim and you must not
-# implement such a service on the client side using the API" —
-# operations.osmfoundation.org/policies/nominatim). In practice this is why
-# the previous version appeared to query but never returned suggestions:
-# type-ahead-style requests get silently dropped/blocked. Photon
-# (komoot.io) is a free, public geocoder explicitly built for
-# search-as-you-type and is the right tool for this job.
-PHOTON_URL = "https://photon.komoot.io/api/"
-NZ_BBOX = "166.0,-47.5,179.5,-34.0"  # min_lon,min_lat,max_lon,max_lat
+# Two live-as-you-type approaches were tried and both hit public-API
+# reliability problems: Nominatim's usage policy explicitly forbids
+# client-side autocomplete and silently drops that traffic, and the
+# Photon fallback started returning HTTP errors (likely rate-limiting from
+# firing a request per keystroke). Neither problem applies to a single,
+# explicit, on-submit search — which is exactly Nominatim's intended use
+# case. Validation now happens by having the person confirm which resolved
+# address they meant from a short list, rather than by querying live.
+NOMINATIM_URL = "https://nominatim.openstreetmap.org/search"
 
 
-@st.cache_data(show_spinner=False, ttl=60 * 60)
-def _nz_address_candidates(searchterm: str):
+def geocode_address_candidates(address: str, limit: int = 5):
     """
-    Returns (suggestions, error) for the address search box. Suggestions
-    are restricted to New Zealand via Photon's bbox filter (a hard filter,
-    not just a bias). Only addresses Photon actually resolves are offered,
-    so picking one from the dropdown *is* the validation step.
+    Returns (candidates, error). candidates is a list of
+    {"label", "lat", "lon"} dicts for real, Nominatim-resolved addresses —
+    if the list is empty (and there's no error) nothing matched, which is
+    itself the validation signal.
     """
-    searchterm = (searchterm or "").strip()
-    if len(searchterm) < 3:
-        return [], None
+    address = (address or "").strip()
+    if not address:
+        return [], "Please enter an address."
 
-    params = {"q": searchterm, "limit": 6, "lang": "en", "bbox": NZ_BBOX}
+    params = {
+        "q": f"{address}, New Zealand",
+        "format": "json",
+        "limit": limit,
+        "countrycodes": "nz",
+    }
+    # Nominatim's usage policy requires a real identifying User-Agent.
+    # Swap in your project name / contact so requests aren't blocked.
+    headers = {"User-Agent": "nz-coast-distance-streamlit-app (contact: you@example.com)"}
 
     try:
-        r = requests.get(PHOTON_URL, params=params, timeout=8)
+        r = requests.get(NOMINATIM_URL, params=params, headers=headers, timeout=15)
         r.raise_for_status()
         data = r.json()
+    except requests.exceptions.HTTPError:
+        status = r.status_code if "r" in locals() else "unknown"
+        return [], f"Address search failed (HTTP {status} from the geocoding service). Please try again shortly."
     except Exception as e:
         return [], f"Address search failed ({e.__class__.__name__}). Check your network connection."
 
-    suggestions = []
-    for feat in data.get("features", []):
-        props = feat.get("properties", {})
-        coords = (feat.get("geometry") or {}).get("coordinates")
-        if not coords:
-            continue
-        lon, lat = coords[0], coords[1]
-
-        label_parts = [
-            props.get("name"),
-            " ".join(p for p in [props.get("housenumber"), props.get("street")] if p) or None,
-            props.get("city") or props.get("district"),
-            props.get("state"),
-            props.get("postcode"),
-        ]
-        # dedupe while preserving order (e.g. name == city for some POIs)
-        label = ", ".join(dict.fromkeys(p for p in label_parts if p))
-        if not label:
-            continue
-
-        suggestions.append((label, {"label": label, "lat": lat, "lon": lon}))
-
-    return suggestions, None
-
-
-def search_nz_addresses(searchterm: str):
-    suggestions, error = _nz_address_candidates(searchterm)
-    st.session_state["_address_search_error"] = error
-    return suggestions
+    candidates = [
+        {"label": item["display_name"], "lat": float(item["lat"]), "lon": float(item["lon"])}
+        for item in data
+        if item.get("display_name")
+    ]
+    if not candidates:
+        return [], "No matching New Zealand address found. Try a more specific search, or use the map instead."
+    return candidates, None
 
 
 # =========================
@@ -222,7 +208,7 @@ def classify_colorsteel_environment(distance_m: float, coast_side: str):
 # STREAMLIT UI
 # =========================
 st.title("🌊 NZ Coast Distance Calculator")
-st.write("Start typing a New Zealand address and pick it from the list to find its distance to the nearest coastline.")
+st.write("Search for a New Zealand address, confirm the match, then calculate its distance to the nearest coastline.")
 
 with st.spinner("Loading coastline data..."):
     coast_data = load_coastline()
@@ -231,17 +217,33 @@ if "calc_result" not in st.session_state:
     st.session_state.calc_result = None
 if "manual_fallback" not in st.session_state:
     st.session_state.manual_fallback = False
+if "address_candidates" not in st.session_state:
+    st.session_state.address_candidates = []
+if "address_search_error" not in st.session_state:
+    st.session_state.address_search_error = None
 
-# --- INPUT SECTION: live-validated address search ---
-selected_address = st_searchbox(
-    search_nz_addresses,
-    placeholder="e.g., Sky Tower, Auckland",
-    label="Enter a New Zealand address:",
-    key="address_searchbox",
-    clear_on_submit=False,
-)
-if st.session_state.get("_address_search_error"):
-    st.caption(f"⚠️ {st.session_state['_address_search_error']}")
+# --- INPUT SECTION: search on submit, then confirm the resolved address ---
+address_input = st.text_input("Enter a New Zealand address:", placeholder="e.g., Sky Tower, Auckland")
+
+if st.button("Search address"):
+    with st.spinner("Searching..."):
+        candidates, error = geocode_address_candidates(address_input)
+        st.session_state.address_candidates = candidates
+        st.session_state.address_search_error = error
+        st.session_state.calc_result = None
+
+if st.session_state.address_search_error:
+    st.warning(st.session_state.address_search_error)
+
+selected_address = None
+if st.session_state.address_candidates:
+    options = {c["label"]: c for c in st.session_state.address_candidates}
+    picked_label = st.selectbox(
+        "We found these matches — confirm the right one:",
+        list(options.keys()),
+        key="address_pick",
+    )
+    selected_address = options[picked_label]
 
 col1, col2 = st.columns([3, 2])
 with col1:

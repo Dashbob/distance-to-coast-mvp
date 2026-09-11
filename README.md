@@ -47,23 +47,24 @@ Make sure `linz_coast_50258.gpkg` sits next to `app.py`.
 
 ## Address validation
 
-The address field is a live search box (`streamlit-searchbox`) backed by
-**Photon** (photon.komoot.io), a free public geocoder purpose-built for
-search-as-you-type, restricted to New Zealand via a hard bounding-box
-filter. Suggestions populate as you type (debounced, 3+ characters), and
-you can only submit a calculation by picking one of the resolved
-suggestions — so an address is "valid" by construction rather than checked
-after the fact. The manual pin-drop map is still there as a fallback.
+Typing an address and clicking **Search address** queries Nominatim once
+(restricted to New Zealand via `countrycodes=nz`) and shows up to 5
+resolved matches in a dropdown for you to confirm — only a real,
+geocoder-resolved address can be selected, and **Calculate Distance** stays
+disabled until one is picked. That confirmation step is the validation.
+The manual pin-drop map is still there as a fallback for addresses
+Nominatim can't resolve.
 
-**Why not Nominatim (OSM)?** The first version used it and suggestions
-never appeared. Nominatim's own usage policy explicitly forbids
-implementing client-side auto-complete against its API, and in practice
-type-ahead-style traffic gets silently dropped or blocked — which is
-exactly what "looks like it's querying but nothing shows up" looks like.
-Photon exists specifically for this use case, so it's the right tool
-rather than something to work around. If a request does fail for another
-reason (e.g. no network), the app now surfaces that as a caption under the
-search box instead of failing silently.
+**Why not live search-as-you-type?** Two attempts at that hit reliability
+walls: Nominatim's own usage policy explicitly forbids implementing
+autocomplete against its API and silently drops that kind of traffic (which
+is why the first version looked like it was querying but never returned
+anything), and a Photon-based fallback started returning HTTP errors,
+likely from firing a request on every keystroke. A single, explicit,
+on-submit search is exactly Nominatim's intended use case, avoids both
+failure modes, and is far lighter on the free public API. If a search does
+fail for another reason, the actual error (including HTTP status) is shown
+as a warning instead of failing silently.
 
 ## Colorsteel® warranty-environment guidance
 
