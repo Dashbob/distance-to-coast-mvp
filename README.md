@@ -50,17 +50,18 @@ Make sure `linz_coast_50258.gpkg` sits next to `app.py`.
 
 Typing an address and clicking **Search address** queries LINZ's own
 **NZ Addresses** dataset (the authoritative national address source,
-`layer-105689` on the LINZ Data Service) and shows up to 8 matches in a
-dropdown to confirm — only a real, LINZ-resolved address can be selected,
-and **Calculate Distance** stays disabled until one is picked. That
-confirmation step is the validation.
+`layer-123113` on the LINZ Data Service), matching against its
+`full_address` field, and shows up to 8 matches in a dropdown to confirm —
+only a real, LINZ-resolved address can be selected, and **Calculate
+Distance** stays disabled until one is picked. That confirmation step is
+the validation.
 
 ### Get a free LINZ API key (required)
 
 1. Create a free account at [data.linz.govt.nz](https://data.linz.govt.nz).
 2. Click your avatar (top right) → **My API keys** → generate a new key
    with the default read-only scope. This automatically covers all public
-   layers, including the NZ Addresses layer used here.
+   layers, including the NZ Addresses layer (123113) used here.
 3. **Local development:** copy `.streamlit/secrets.toml.example` to
    `.streamlit/secrets.toml` and paste your key in as `LINZ_API_KEY`.
    This file is already git-ignored, so it won't get committed.

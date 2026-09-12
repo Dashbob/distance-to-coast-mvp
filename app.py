@@ -45,10 +45,10 @@ def nztm_to_wgs84(x, y):
 #
 # Get a free key: sign in at https://data.linz.govt.nz -> avatar menu ->
 # "My API keys" -> generate a key with the default read-only scope (this
-# grants access to all public layers, including layer 105689 used below).
+# grants access to all public layers, including layer 123113 used below).
 # Store it as LINZ_API_KEY in .streamlit/secrets.toml locally, and in the
 # app's "Secrets" settings on Streamlit Community Cloud when deployed.
-LINZ_ADDRESS_LAYER = "layer-123113"  # "NZ Addresses" (replaced NZ Street Address, Jan 2023)
+LINZ_ADDRESS_LAYER = "layer-123113"  # "NZ Addresses" (current layer id)
 LINZ_WFS_TEMPLATE = "https://data.linz.govt.nz/services;key={api_key}/wfs"
 
 
@@ -61,8 +61,8 @@ def geocode_address_candidates(address: str, limit: int = 8):
     """
     Returns (candidates, error). candidates is a list of
     {"label", "lat", "lon"} dicts sourced from LINZ's authoritative NZ
-    Addresses dataset — if the list is empty (and there's no error)
-    nothing matched, which is itself the validation signal.
+    Addresses dataset (layer-123113) — if the list is empty (and there's
+    no error) nothing matched, which is itself the validation signal.
     """
     address = (address or "").strip()
     if not address:
@@ -76,11 +76,9 @@ def geocode_address_candidates(address: str, limit: int = 8):
         )
 
     term = _cql_escape(address)
-    cql_filter = (
-        f"full_road_name ILIKE '%{term}%' "
-        f"OR suburb_locality ILIKE '%{term}%' "
-        f"OR town_city ILIKE '%{term}%'"
-    )
+    # full_address already combines number/street/suburb/city, so a single
+    # ILIKE against it covers most partial-address searches.
+    cql_filter = f"full_address ILIKE '%{term}%'"
     params = {
         "service": "WFS",
         "version": "2.0.0",
@@ -111,13 +109,7 @@ def geocode_address_candidates(address: str, limit: int = 8):
             continue
         lon, lat = coords[0], coords[1]
 
-        number = props.get("full_address_number") or props.get("address_number") or ""
-        street = props.get("full_road_name") or ""
-        street_line = f"{number} {street}".strip()
-        suburb = props.get("suburb_locality") or ""
-        city = props.get("town_city") or ""
-
-        label = ", ".join(p for p in [street_line, suburb, city] if p)
+        label = props.get("full_address")
         if not label:
             continue
 
