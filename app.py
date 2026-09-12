@@ -48,7 +48,7 @@ def nztm_to_wgs84(x, y):
 # grants access to all public layers, including layer 105689 used below).
 # Store it as LINZ_API_KEY in .streamlit/secrets.toml locally, and in the
 # app's "Secrets" settings on Streamlit Community Cloud when deployed.
-LINZ_ADDRESS_LAYER = "layer-105689"  # "NZ Addresses" (replaced NZ Street Address, Jan 2023)
+LINZ_ADDRESS_LAYER = "layer-123113"  # "NZ Addresses" (replaced NZ Street Address, Jan 2023)
 LINZ_WFS_TEMPLATE = "https://data.linz.govt.nz/services;key={api_key}/wfs"
 
 
