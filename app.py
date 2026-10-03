@@ -102,6 +102,71 @@ def calculate_distance(lat: float, lon: float, coast_gdf, label: str):
         "coast_side": best_match_data["coast_side"]
     }
 
+
+# =========================
+# WARRANTY ENVIRONMENT & YEARS
+# =========================
+def get_colorsteel_warranty(distance_meters, coast):
+    is_east = (coast == 'East')
+
+    if distance_meters > 5000:
+        zone = 'Mild'
+        roof_perforation = '50 Years'
+        roof_paint = '18 Years'
+        wall_perforation = '30 Years'
+        wall_paint = '15 Years'
+        acc_perforation = '15 Years'
+        acc_paint = '10 Years'
+        maintenance = 'Rain washing on exposed roof areas. Manual washing at least every 12 months for unwashed areas.'
+    elif (is_east and distance_meters >= 500) or (not is_east and distance_meters >= 1000):
+        zone = 'Moderate'
+        roof_perforation = '40 Years'
+        roof_paint = '18 Years'
+        wall_perforation = '25 Years'
+        wall_paint = '15 Years'
+        acc_perforation = '15 Years'
+        acc_paint = '10 Years'
+        maintenance = 'Rain washing on exposed roof areas. Manual washing at least every 12 months for sheltered unwashed areas.'
+    elif (is_east and distance_meters >= 100) or (not is_east and distance_meters >= 500):
+        zone = 'Severe'
+        roof_perforation = '30 Years'
+        roof_paint = '15 Years'
+        wall_perforation = '20 Years'
+        wall_paint = '15 Years'
+        acc_perforation = '15 Years'
+        acc_paint = '10 Years'
+        maintenance = 'Rain washing on exposed roof. Regular manual washing every 6 months for unwashed areas.'
+    elif (is_east and distance_meters >= 25) or (not is_east and distance_meters >= 50):
+        zone = 'Very Severe'
+        roof_perforation = '20 Years'
+        roof_paint = '15 Years'
+        wall_perforation = '20 Years'
+        wall_paint = '15 Years'
+        acc_perforation = '15 Years'
+        acc_paint = '10 Years'
+        maintenance = 'Frequent manual washing required every 3 months for unwashed areas subject to salt spray.'
+    else:
+        zone = 'Extremely Severe'
+        roof_perforation = '!'
+        roof_paint = '!'
+        wall_perforation = '!'
+        wall_paint = '!'
+        acc_perforation = '!'
+        acc_paint = '!'
+        maintenance = 'Consult COLORSTEEL® directly or consider COLORSTEEL Altimate®.'
+
+    return {
+        'zone': zone,
+        'roofPerforation': roof_perforation,
+        'roofPaint': roof_paint,
+        'wallPerforation': wall_perforation,
+        'wallPaint': wall_paint,
+        'accPerforation': acc_perforation,
+        'accPaint': acc_paint,
+        'maintenance': maintenance,
+    }
+
+
 # =========================
 # STREAMLIT UI
 # =========================
@@ -169,16 +234,28 @@ if st.session_state.manual_fallback:
 # --- RESULTS SECTION ---
 if st.session_state.calc_result and not st.session_state.manual_fallback:
     res = st.session_state.calc_result
+    war = get_colorsteel_warranty(res['distance_m'], res['coast_side'])
     st.success("Calculation complete!")
     st.subheader(f"Results for: {res['label']}")
     
     # Metrics
-    col1, col2 = st.columns(2)
+    col1, col2, col3 = st.columns(3)
     with col1:
         dist_km = res['distance_m'] / 1000
         st.metric("Distance to Coast", f"{dist_km:.2f} km")
     with col2:
         st.metric("Coast Side", res['coast_side'].title())
+    with col3:
+        st.metric("Environment", war['zone'].title())
+
+    st.subheader(f"COLORSTEEL MAXAM warranties:")
+    col4, col5, col5 = st.columns(3)
+    with col4:
+        st.metric("Roofing", war['roofPerforation'].title())
+    with col5:
+        st.metric("Walling", war['wallPerforation'].title())
+    with col6:
+        st.metric("Accessories", war['accPerforation'].title())
     
     st.write("**Map View:**")
     
