@@ -274,7 +274,7 @@ if st.session_state.calc_result and not st.session_state.manual_fallback:
             border="horizontal",
             width="content",
         )
-    st.caption(war['maintenance'])
+    st.caption(f"**Maintenance:** {war['maintenance']}")
     
     st.write("**Map View:**")
     
