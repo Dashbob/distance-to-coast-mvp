@@ -249,7 +249,7 @@ if st.session_state.calc_result and not st.session_state.manual_fallback:
         st.metric("Environment", war['zone'].title())
 
     st.subheader(f"COLORSTEEL MAXAM warranties:")
-    col4, col5, col5 = st.columns(3)
+    col4, col5, col6 = st.columns(3)
     with col4:
         st.metric("Roofing", war['roofPerforation'].title())
     with col5:
