@@ -146,7 +146,7 @@ def get_colorsteel_warranty(distance_meters, coast):
         acc_paint = '10 Years'
         maintenance = 'Frequent manual washing required every 3 months for unwashed areas subject to salt spray.'
     else:
-        zone = 'Extremely Severe'
+        zone = 'Extreme'
         roof_perforation = '!'
         roof_paint = '!'
         wall_perforation = '!'
@@ -248,14 +248,33 @@ if st.session_state.calc_result and not st.session_state.manual_fallback:
     with col3:
         st.metric("Environment", war['zone'].title())
 
-    st.subheader(f"COLORSTEEL MAXAM warranties:")
-    col4, col5, col6 = st.columns(3)
+    st.divider()
+    
+    st.subheader(f"Estimated warranties:")
+    col4, col5,  = st.columns(2)
     with col4:
-        st.metric("Roofing", war['roofPerforation'].title())
+        st.table(
+            {
+                "Type": "**Corrosion to perforation**",
+                "Roofing": war['roofPerforation'],
+                "Walling": war['wallPerforation'],
+                "Accessories": war['accPerforation'],
+            },
+            border="horizontal",
+            width="content",
+        )
     with col5:
-        st.metric("Walling", war['wallPerforation'].title())
-    with col6:
-        st.metric("Accessories", war['accPerforation'].title())
+        st.table(
+            {
+                "Type": "**Paint flake, peel and fade**",
+                "Roofing": war['roofPaint'],
+                "Walling": war['wallPaint'],
+                "Accessories": war['accPaint'],
+            },
+            border="horizontal",
+            width="content",
+        )
+    st.caption(war['maintenance'])
     
     st.write("**Map View:**")
     
