@@ -14,6 +14,13 @@ st.set_page_config(page_title="NZ Coast Distance Tool", page_icon="🌊")
 
 COAST_CACHE = "linz_coast_50258.gpkg"
 
+# Fetch the API key from Streamlit secrets
+carto_api_key = st.secrets["CARTO_API_KEY"]
+
+# Define the custom CARTO Positron tile URL and attribution
+carto_tiles = f"https://basemaps.cartocdn.com/rastertiles/light_all/{{z}}/{{x}}/{{y}}.png?key={carto_api_key}"
+carto_attr = "&copy; <a href='https://www.openstreetmap.org/copyright'>OpenStreetMap</a> contributors &copy; <a href='https://carto.com/attributions'>CARTO</a>"
+
 # =========================
 # CRS TRANSFORMS
 # =========================
@@ -140,7 +147,8 @@ if st.session_state.manual_fallback:
     m = folium.Map(
         location=[-37.893402, 175.466771], 
         zoom_start=5, 
-        tiles="CartoDB positron"
+        tiles=carto_tiles,
+        attr=carto_attr
     )
     map_data = st_folium(m, width=720, height=500, key="fallback_map")
     
@@ -183,7 +191,8 @@ if st.session_state.calc_result and not st.session_state.manual_fallback:
     res_map = folium.Map(
         location=[center_lat, center_lon], 
         zoom_start=11, 
-        tiles="CartoDB positron"
+        tiles=carto_tiles,
+        attr=carto_attr
     )
 
     folium.Marker(
